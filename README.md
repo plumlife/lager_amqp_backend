@@ -28,7 +28,8 @@ You can pass the backend the following configuration (shown are the defaults):
           {amqp_pass,   <<"guest">>},
           {amqp_vhost,  <<"/">>},
           {amqp_host,   "localhost"},
-          {amqp_port,   5672}
+          {amqp_port,   5672},
+          {routing_key, <<"YourRoutingKey">>}
         ]}
       ]}
     ]}
