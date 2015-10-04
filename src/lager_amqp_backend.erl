@@ -96,23 +96,25 @@ init({RoutingKey, Level, Host}) when is_binary(RoutingKey), is_atom(Level) ->
     init([{routing_key, RoutingKey}, {level, Level}, {amqp_host, Host}]);
 
 
-init(Params) when is_list(Params) ->  
+init(Params) when is_list(Params) ->
+    ets:new(amqp_remote_logging, [set, public, named_table, {read_concurrency, true}]),
     Name        = proplists:get_value(name, Params, ?MODULE),  
     Level       = lager_util:level_to_num(proplists:get_value(level, Params, debug)),
     Exchange    = proplists:get_value(exchange, Params, list_to_binary(atom_to_list(?MODULE))),
-    RoutingKey  = proplists:get_value(routing_key, Params, undefined),
 
-    AmqpParams = #amqp_params_network {
-      username       = proplists:get_value(amqp_user, Params, <<"guest">>),
-      password       = proplists:get_value(amqp_pass, Params, <<"guest">>),
-      virtual_host   = proplists:get_value(amqp_vhost, Params, <<"/">>),
-      host           = proplists:get_value(amqp_host, Params, "127.0.0.1"),
-      port           = proplists:get_value(amqp_port, Params, 5672)
-     },
-  
+    %% NOTE: this is not portable and is highly specific to Plum's
+    %% Lightpad and fork of this tool!!! DO NOT USE (except on a
+    %% Lightpad)
+    RoutingKey = case re:replace(os:cmd("cat /etc/node_uuid"), "(^\\s+)|(\\s+$)", "", [global,{return,list}]) of
+        []  -> undefined;
+        Key -> Key
+    end,
+
+    ExgType     = proplists:get_value(amqp_exchange_type, Params, <<"direct">>)
+
     {ok, Channel} = amqp_utils:amqp_channel(AmqpParams),
     #'exchange.declare_ok'{} = amqp_channel:call(Channel, #'exchange.declare'{ exchange = Exchange, 
-                                                                               type = <<"topic">> }),
+                                                                               type     = ExgType }),
   
     {ok, #state{ name        = Name,
                  routing_key = RoutingKey,
@@ -120,8 +122,6 @@ init(Params) when is_list(Params) ->
                  exchange    = Exchange,
                  params      = AmqpParams
                }}.
-
-
 
 %%--------------------------------------------------------------------
 %% @private
@@ -139,9 +139,16 @@ init(Params) when is_list(Params) ->
 handle_event({log,  Message}, #state{routing_key = RoutingKey, level = L } = State) ->
     case lager_util:is_loggable(Message, L, {lager_amqp_backend, RoutingKey}) of
         true ->
-            {ok, log(State, lager_msg:datetime(Message), 
-                     lager_msg:severity_as_int(Message),
-                     lager_msg:message(Message))};
+            Active = case ets:lookup(amqp_remote_logging, active) of
+                [{_Key, Value}|_] -> Value;
+                []                -> false
+            end,
+            case Active of
+                true  -> {ok, log(State, lager_msg:datetime(Message), 
+                                  lager_msg:severity_as_int(Message),
+                                  lager_msg:message(Message))};
+                false -> {ok, State}
+            end;
         false ->
             {ok, State}
     end;
@@ -234,7 +241,6 @@ log(#state{params = AmqpParams } = State, {Date, Time}, Level, Message) ->
         _ ->
             State
     end.    
-
 
 send(#state{ name        = Name,
              exchange    = Exchange,
